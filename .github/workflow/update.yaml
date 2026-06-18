@@ -1,0 +1,43 @@
+name: Update KBS Stream URL
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # 자동으로 실행 (5분 주기)
+  workflow_dispatch: # 버튼을 눌러 수동으로 즉시 실행 가능
+
+permissions:
+  contents: write # 파일 수정 권한 부여
+
+jobs:
+  update-stream:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Fetch Latest KBS URL and Generate Files
+      run: |
+        # 1. 제시해주신 스크립트 기반으로 최신 스트리밍 주소 추출 (백슬래시 제거 포함)
+        STREAM_URL=$(curl -s "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/24" | grep -o 'https://[^"]*' | head -n 1 | sed 's/\\//g')
+        
+        if [ -z "$STREAM_URL" ]; then
+          echo "에러: 스트리밍 주소를 가져오지 못했습니다."
+          exit 1
+        fi
+        
+        echo "추출된 주소: $STREAM_URL"
+
+        # 2. 고정 주소로 쓸 수 있는 kbs1fm.pls 파일 생성
+        echo -e "[playlist]\nFile1=$STREAM_URL\nTitle1=KBS 1FM (Classic FM)\nLength1=-1\nNumberOfEntries=1\nVersion=2" > kbs1fm.pls
+
+        # 3. template.html의 플레이스홀더를 진짜 주소로 변경하여 index.html 생성
+        sed "s|{{STREAM_URL}}|$STREAM_URL|g" template.html > index.html
+
+    - name: Commit and Push Changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add kbs1fm.pls index.html
+        
+        # 변경사항이 있을 때만 커밋 및 푸시하여 에러 방지
+        git diff --quiet && git diff --staged --quiet || (git commit -m "정기 업데이트: 최신 스트리밍 주소 반영" && git push)
