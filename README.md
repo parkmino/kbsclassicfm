@@ -1,1 +1,1 @@
-KBS TV & Radio
+TV & Radio
