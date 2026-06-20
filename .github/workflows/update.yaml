@@ -1,8 +1,8 @@
-name: Update KBS Stream URLs
+name: Update Radio Stream URLs
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # 매 5분마다 자동으로 실행
+    - cron: '*/5 * * * *' # 5분마다 실행
   workflow_dispatch:
 
 permissions:
@@ -15,45 +15,73 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v5
 
-    - name: Fetch KBS URLs and Generate PLS Files
+    - name: Fetch URLs and Generate PLS Files
       run: |
-        CHANNELS="1tv:11 2tv:12 world:14 news_d:81 drama:N91 joy:N92 life:N93 story:N94 kids:N96 1:nvod1 2:nvod2 3:nvod3 4:nvod4 5:nvod5 6:nvod6 7:nvod7 8:nvod8 9:nvod9 0:nvod10 1fm:24 2fm:25 1r:21 2r:22 3r:23 han:26 mul:wink11 eng:I92"
+        # 채널 설정 배열 정의 ("식별자:방송사:API인자1:API인자2:표시이름")
+        CHANNELS=(
+          "1fm:kbs:24::KBS 1FM (Classic)"
+          "2fm:kbs:25::KBS 2FM (Cool)"
+          "1r:kbs:21::KBS 1Radio"
+          "2r:kbs:22::KBS 2Radio (Happy)"
+          "3r:kbs:23::KBS 3Radio"
+          "han:kbs:26::KBS 한민족방송"
+          "mul:kbs:wink11::KBS 다문화방송"
+          "eng:kbs:I92::KBS WORLD"
+          "mbcm:mbc:chm::MBC 올댓뮤직"
+          "mbc4u:mbc:mfm::MBC FM4U"
+          "mbcfm:mbc:sfm::MBC 표준FM"
+          "sbsp:sbs:powerpc:powerfm:SBS 파워FM"
+          "sbsl:sbs:lovepc:lovefm:SBS 러브FM"
+          "sbsg:sbs:sbsdmbpc:sbsdmb:SBS 고릴라M"
+        )
         
-        # HTML 템플릿에 주입할 JSON 데이터 시작
+        # 이전 데이터 정리를 위해 기존 pls 파일 일괄 삭제
+        rm -f *.pls
+        
         JSON_DATA="{"
         
-        # 이전에 생성된 구형 m3u 파일이 있다면 삭제
-        rm -f kbs_all.m3u
-        
-        # 각 채널별로 API 호출
-        for ch_info in $CHANNELS; do
-          name="${ch_info%%:*}"
-          code="${ch_info##*:}"
+        for ch in "${CHANNELS[@]}"; do
+          # ':' 구분자로 문자열 자르기
+          IFS=":" read -r id type arg1 arg2 name <<< "$ch"
+          URL=""
           
-          # API 호출 및 m3u8 주소 추출
-          URL=$(curl -s "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/$code" | grep -o 'http[^"]*' | head -n 1 | sed 's/\\//g')
+          # 1. 방송사별 주소 추출 로직
+          if [ "$type" == "kbs" ]; then
+            URL=$(curl -s "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/$arg1" | grep -o 'http[^"]*' | head -n 1 | sed 's/\\//g')
           
-          if [ -n "$URL" ]; then
-            echo "추출 성공: $name ($code)"
-            
-            # 💡 개별 PLS 파일 생성 (예: kbs_1tv.pls, kbs_1fm.pls 등)
-            echo -e "[playlist]\nFile1=$URL\nTitle1=KBS $name\nLength1=-1\nNumberOfEntries=1\nVersion=2" > "kbs_${name}.pls"
-            
-            # JSON 데이터에 추가
-            JSON_DATA+="\"$name\":\"$URL\","
-          else
-            echo "추출 실패: $name ($code)"
+          elif [ "$type" == "mbc" ]; then
+            URL=$(curl -s "https://sminiplay.imbc.com/aacplay.ashx?agent=webapp&channel=$arg1" | grep -o 'http[^"]*' | head -n 1)
+          
+          elif [ "$type" == "sbs" ]; then
+            # SBS API는 JSON을 반환하므로 http 주소만 파싱
+            URL=$(curl -s "https://apis.sbs.co.kr/play-api/1.0/livestream/$arg1/$arg2?protocol=hls&ssl=Y" | grep -o 'http[^"]*' | head -n 1 | sed 's/\\//g')
           fi
           
-          # 서버 과부하 방지 지연
+          # 특수문자(줄바꿈 등) 제거
+          URL=$(echo "$URL" | tr -d '\r\n')
+          
+          # 2. 파일 및 JSON 생성
+          if [ -n "$URL" ]; then
+            echo "✅ $name ($id) 추출 완료"
+            
+            # 개별 PLS 파일 생성 (예: 1fm.pls, mbcfm.pls)
+            echo -e "[playlist]\nFile1=$URL\nTitle1=$name\nLength1=-1\nNumberOfEntries=1\nVersion=2" > "${id}.pls"
+            
+            # JSON 데이터 덧붙이기
+            JSON_DATA+="\"$id\":{\"name\":\"$name\",\"url\":\"$URL\"},"
+          else
+            echo "❌ $name ($id) 주소를 찾을 수 없음"
+          fi
+          
+          # 서버 요청 과부하 방지
           sleep 0.5
         done
         
-        # JSON 포맷 마무리 (마지막 콤마 제거)
+        # 마지막 콤마 제거 후 JSON 닫기
         JSON_DATA="${JSON_DATA%,}}"
         JSON_DATA+="}"
         
-        # template.html 치환하여 index.html 생성
+        # template.html 치환
         sed "s|{{CHANNELS_JSON}}|$JSON_DATA|g" template.html > index.html
 
     - name: Commit and Push Changes
@@ -61,10 +89,7 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # 변경된/생성된 모든 pls 파일과 index.html을 추가
         git add *.pls index.html
-        
-        # 이전 잔여물(m3u 등) 삭제 반영
         git add -u
         
-        git diff --quiet && git diff --staged --quiet || (git commit -m "정기 업데이트: 5분 주기 개별 PLS 반영" && git push)
+        git diff --quiet && git diff --staged --quiet || (git commit -m "정기 업데이트: 방송 3사 라디오 URL 최신화" && git push)
